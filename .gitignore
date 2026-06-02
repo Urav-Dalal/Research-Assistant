@@ -18,3 +18,4 @@ build/
 *.egg
 .DS_Store
 .vscode/
+temp/
