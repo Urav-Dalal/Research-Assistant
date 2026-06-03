@@ -1,13 +1,22 @@
 import os
+import uuid
 
 from fastapi import FastAPI, UploadFile, File
 from .upload_pipeline import process_pdf
 from .qdrant import create_collection
 
+from .database import engine
+from .models import Base
+from .crud import create_paper
+
+from .database import SessionLocal
+from .models import Paper
+
 # FastAPI app entrypoint for the `app` package.
 # When using `uvicorn app.main:app --reload`, this module is loaded as part
 # of the `app` package, so relative imports are required.
 app = FastAPI()
+Base.metadata.create_all(bind=engine)
 
 # Directory where uploaded PDF files are temporarily written before processing.
 UPLOAD_DIR = "temp"
@@ -23,7 +32,7 @@ def health_check():
     return {"status": "running"}
 
 @app.post("/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(login_id: str,file: UploadFile = File(...)):
     """Accept an uploaded PDF, save it locally, process it, and return metadata."""
 
     # Save the uploaded file to the local temp directory.
@@ -32,11 +41,43 @@ async def upload_pdf(file: UploadFile = File(...)):
     with open(file_path, "wb") as f:
         f.write(await file.read())
 
-    # Process the PDF content and store embeddings in Qdrant.
-    chunks_stored = process_pdf(file_path, file.filename)
+    paper_id = str(uuid.uuid4())
+    
+    create_paper(
+    paper_id=paper_id,
+    user_id=login_id,
+    filename=file.filename
+)
 
+    # Process the PDF content and store embeddings in Qdrant.
+    chunks_stored = process_pdf(
+    pdf_path=file_path,
+    filename=file.filename,
+    login_id=login_id,
+    paper_id=paper_id
+)
     return {
         "message": "PDF processed successfully",
         "filename": file.filename,
         "chunks_stored": chunks_stored,
     }
+    
+@app.get("/papers")
+def get_papers():
+    db = SessionLocal()
+
+    try:
+        papers = db.query(Paper).all()
+
+        return [
+            {
+                "paper_id": p.paper_id,
+                "user_id": p.user_id,
+                "filename": p.filename,
+                "uploaded_at": p.uploaded_at
+            }
+            for p in papers
+        ]
+
+    finally:
+        db.close()

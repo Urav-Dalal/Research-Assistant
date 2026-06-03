@@ -1,3 +1,5 @@
+import datetime
+
 import fitz
 import uuid
 
@@ -7,6 +9,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client.models import PointStruct
 
 from .qdrant import client, COLLECTION_NAME
+from datetime import datetime 
 
 # PDF processing pipeline:
 # 1. extract raw text from the uploaded PDF
@@ -33,7 +36,7 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 
-def process_pdf(pdf_path, filename):
+def process_pdf(pdf_path, filename, paper_id, login_id):
     """Transform a PDF file into stored Qdrant vectors."""
 
     # Read all text from the PDF.
@@ -48,13 +51,28 @@ def process_pdf(pdf_path, filename):
         embedding = model.encode(chunk).tolist()
 
         # Build the Qdrant point with metadata that includes source and chunk index.
+        child_chunk_id = str(uuid.uuid4())
+
         point = PointStruct(
-            id=str(uuid.uuid4()),
+            id=child_chunk_id,
             vector=embedding,
             payload={
-                "text": chunk,
+                "login_id": login_id,
+                "paper_id": paper_id,
+
                 "source": filename,
+
+                "chunk_type": "child",
+
+                "parent_chunk_id": None,
+                "child_chunk_id": child_chunk_id,
+
+                "section_title": None,
+
                 "chunk_index": idx,
+
+                "text": chunk,
+                "upload_timestamp": datetime.utcnow().isoformat()
             },
         )
         points.append(point)
