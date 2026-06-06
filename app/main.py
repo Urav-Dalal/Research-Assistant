@@ -1,9 +1,13 @@
 import os
 import uuid
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
+
 from .upload_pipeline import process_pdf
 from .qdrant import create_collection
+from .retrieval import query as rag_query, Message as RAGMessage
 
 from .database import engine
 from .models import Base
@@ -30,6 +34,41 @@ create_collection()
 def health_check():
     """Simple health check endpoint."""
     return {"status": "running"}
+
+
+class ChatRequest(BaseModel):
+    login_id: str
+    message: Optional[str] = None
+    messages: Optional[List[dict]] = None
+    paper_id: Optional[str] = None
+
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    """Accept a user message or conversation and return a RAG-grounded answer."""
+    # Build conversation list for retrieval.query
+    conversation: List[RAGMessage] = []
+    if req.messages:
+        for m in req.messages:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            conversation.append(RAGMessage(role=role, content=content))
+    elif req.message:
+        conversation.append(RAGMessage(role="user", content=req.message))
+    else:
+        raise HTTPException(status_code=400, detail="Either `message` or `messages` is required")
+
+    # Call the RAG pipeline
+    try:
+        result = rag_query(conversation=conversation, login_id=req.login_id, paper_id=req.paper_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "answer": result.answer,
+        "sources": result.sources,
+        "query": result.query,
+    }
 
 @app.post("/upload-pdf")
 async def upload_pdf(login_id: str,file: UploadFile = File(...)):
