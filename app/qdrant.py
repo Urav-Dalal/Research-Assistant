@@ -1,24 +1,20 @@
 import os
-
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance
-
+from qdrant_client.models import VectorParams, Distance, PayloadSchemaType
 from dotenv import load_dotenv
 
-# Load environment variables from a .env file if present.
 load_dotenv()
 
-# Create a Qdrant client using configured service URL and API key.
 client = QdrantClient(
     url=os.getenv("QDRANT_URL"),
     api_key=os.getenv("QDRANT_API_KEY"),
 )
 
-# The name of the Qdrant collection to use for storing embeddings.
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 
+
 def create_collection():
-    """Create the vector collection if it does not already exist."""
+    """Create the vector collection and payload indexes if they don't exist."""
     collections = client.get_collections().collections
     collection_names = [c.name for c in collections]
 
@@ -30,3 +26,14 @@ def create_collection():
                 distance=Distance.COSINE,
             ),
         )
+
+    # Create payload indexes for fields we filter by
+    for field in ["login_id", "paper_id"]:
+        try:
+            client.create_payload_index(
+                collection_name=COLLECTION_NAME,
+                field_name=field,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass  # index already exists, safe to ignore
