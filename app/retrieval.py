@@ -25,11 +25,11 @@ from .qdrant import COLLECTION_NAME, client
 # Constants
 # ---------------------------------------------------------------------------
 
-RETRIEVAL_TOP_K      = 8    # child chunks to retrieve from Qdrant
+RETRIEVAL_TOP_K      = 12    # child chunks to retrieve from Qdrant
 MAX_CONTEXT_CHUNKS   = 5    # deduplicated parent chunks passed to LLM
 LLM_MODEL            = "llama-3.1-8b-instant"   # free on Groq — swap to llama-3.3-70b-versatile for higher quality
 LLM_MAX_TOKENS       = 1024
-MIN_RELEVANCE_SCORE  = 0.30  # discard chunks below this cosine similarity
+MIN_RELEVANCE_SCORE  = 0.25  # discard chunks below this cosine similarity
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +214,9 @@ def query(
     # ------------------------------------------------------------------
     # 1. Embed the query
     # ------------------------------------------------------------------
-    query_vector = _batch_encode([query_text])[0]
+    search_query = _rewrite_query(query_text)
+    print(f"DEBUG rewritten query: {search_query}")
+    query_vector = _batch_encode([search_query])[0]
     logger.info("Query: '%s'", query_text[:80])
 
     # ------------------------------------------------------------------
@@ -223,7 +225,9 @@ def query(
     qdrant_filter = _build_filter(login_id, paper_id)
     child_hits = _retrieve_child_chunks(query_vector, RETRIEVAL_TOP_K, qdrant_filter)
     logger.info("Retrieved %d child chunks above score threshold.", len(child_hits))
-
+    print(f"DEBUG child hits count: {len(child_hits)}")    # ADD THIS
+    for h in child_hits:                                   # ADD THIS
+        print(f"  score={h['score']:.4f} section={h['payload'].get('section_title')} type={h['payload'].get('chunk_type')}")
     if not child_hits:
         return RAGResult(
             answer="I could not find any relevant information in the uploaded documents for your question.",
@@ -257,3 +261,27 @@ def query(
         ],
         query=query_text,
     )
+
+def _rewrite_query(query_text: str) -> str:
+    if not query_text or not query_text.strip():
+        return query_text          # fall back to original if empty
+    
+    groq_client = Groq()
+    response = groq_client.chat.completions.create(
+        model=LLM_MODEL,
+        max_tokens=50,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Rewrite as a keyword-dense search query for a CV/resume. "
+                f"Return ONLY the rewritten query, no explanation.\n\n"
+                f"Question: {query_text}"
+            )
+        }]
+    )
+    rewritten = response.choices[0].message.content.strip()
+    # If model returned something weird, fall back to original
+    if len(rewritten) > 200 or "?" in rewritten[:10]:
+        return query_text
+    logger.info("Query rewritten: '%s' → '%s'", query_text, rewritten)
+    return rewritten

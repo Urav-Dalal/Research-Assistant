@@ -48,11 +48,16 @@ async def chat(req: ChatRequest):
     """Accept a user message or conversation and return a RAG-grounded answer."""
     # Build conversation list for retrieval.query
     conversation: List[RAGMessage] = []
-    if req.messages:
-        for m in req.messages:
-            role = m.get("role", "user")
-            content = m.get("content", "")
-            conversation.append(RAGMessage(role=role, content=content))
+    # Only use messages if they actually contain valid content
+    valid_messages = [
+    m for m in (req.messages or [])
+    if m.get("role") and m.get("content", "").strip()
+    ]
+
+    if valid_messages:
+        for m in valid_messages:
+            conversation.append(RAGMessage(role=m["role"], content=m["content"]))
+
     elif req.message:
         conversation.append(RAGMessage(role="user", content=req.message))
     else:
