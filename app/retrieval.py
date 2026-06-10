@@ -27,7 +27,7 @@ from .qdrant import COLLECTION_NAME, client
 
 RETRIEVAL_TOP_K      = 12    # child chunks to retrieve from Qdrant
 MAX_CONTEXT_CHUNKS   = 5    # deduplicated parent chunks passed to LLM
-LLM_MODEL            = "llama-3.1-8b-instant"   # free on Groq — swap to llama-3.3-70b-versatile for higher quality
+LLM_MODEL            = "llama-3.3-70b-versatile"   # free on Groq — swap to llama-3.3-70b-versatile for higher quality
 LLM_MAX_TOKENS       = 1024
 MIN_RELEVANCE_SCORE  = 0.25  # discard chunks below this cosine similarity
 
@@ -225,9 +225,8 @@ def query(
     qdrant_filter = _build_filter(login_id, paper_id)
     child_hits = _retrieve_child_chunks(query_vector, RETRIEVAL_TOP_K, qdrant_filter)
     logger.info("Retrieved %d child chunks above score threshold.", len(child_hits))
-    print(f"DEBUG child hits count: {len(child_hits)}")    # ADD THIS
-    for h in child_hits:                                   # ADD THIS
-        print(f"  score={h['score']:.4f} section={h['payload'].get('section_title')} type={h['payload'].get('chunk_type')}")
+    logger.info("Retrieved %d child chunks", len(child_hits))
+    
     if not child_hits:
         return RAGResult(
             answer="I could not find any relevant information in the uploaded documents for your question.",
@@ -273,7 +272,7 @@ def _rewrite_query(query_text: str) -> str:
         messages=[{
             "role": "user",
             "content": (
-                f"Rewrite as a keyword-dense search query for a CV/resume. "
+                f"Rewrite this as a SHORT 3-6 word search query for a CV/resume."
                 f"Return ONLY the rewritten query, no explanation.\n\n"
                 f"Question: {query_text}"
             )
