@@ -16,6 +16,8 @@ from .crud import create_paper
 from .database import SessionLocal
 from .models import Paper
 
+from .arxiv_agent import route_query, ingest_arxiv_paper, QueryIntent
+
 # FastAPI app entrypoint for the `app` package.
 # When using `uvicorn app.main:app --reload`, this module is loaded as part
 # of the `app` package, so relative imports are required.
@@ -45,7 +47,18 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    """Accept a user message or conversation and return a RAG-grounded answer."""
+    """
+    Accept a user message and return a grounded answer.
+ 
+    The agent layer (route_query) now sits in front of the RAG pipeline:
+      - If local retrieval is confident → answers from uploaded papers (unchanged behaviour)
+      - If query needs new papers → returns ArXiv search results for user review
+      - If user explicitly searches → returns ArXiv results immediately
+ 
+    The response shape has one new field: `intent`
+      "rag_local"    → same as before, answer + sources returned
+      "arxiv_search" → arxiv_papers list returned instead, no answer yet
+    """
     # Build conversation list for retrieval.query
     conversation: List[RAGMessage] = []
     # Only use messages if they actually contain valid content
@@ -65,15 +78,45 @@ async def chat(req: ChatRequest):
 
     # Call the RAG pipeline
     try:
-        result = rag_query(conversation=conversation, login_id=req.login_id, paper_id=req.paper_id)
+        result = route_query(
+            conversation=conversation,
+            login_id=req.login_id,
+            paper_id=req.paper_id or None,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return {
-        "answer": result.answer,
-        "sources": result.sources,
-        "query": result.query,
-    }
+    if result.intent == QueryIntent.RAG_LOCAL:
+        # Identical response shape to what you had before — nothing breaks.
+        return {
+            "intent":  "rag_local",
+            "answer":  result.rag_result.answer,
+            "sources": result.rag_result.sources,
+            "query":   result.rag_result.query,
+            "message": result.message,
+        }
+ 
+    else:
+        # ArXiv results returned — user reviews and calls /papers/ingest-arxiv
+        return {
+            "intent": "arxiv_search",
+            "message": result.message,
+            "arxiv_papers": [
+                {
+                    "arxiv_id":  p.arxiv_id,
+                    "title":     p.title,
+                    "authors":   p.authors,
+                    "summary":   p.summary,
+                    "pdf_url":   p.pdf_url,
+                    "published": p.published,
+                }
+                for p in result.arxiv_papers
+            ],
+            "next_step": (
+                "Pick a paper from arxiv_papers and call "
+                "POST /papers/ingest-arxiv with its arxiv_id to add it to your library."
+            ),
+        }
 
 @app.post("/upload-pdf")
 async def upload_pdf(login_id: str,file: UploadFile = File(...)):
@@ -125,3 +168,42 @@ def get_papers():
 
     finally:
         db.close()
+
+
+
+class ArxivIngestRequest(BaseModel):
+    """
+    Called after the user reviews ArXiv results from /chat and picks a paper.
+    Downloads the PDF and runs it through the same pipeline as /upload-pdf.
+    """
+    login_id:  str
+    arxiv_id:  str    # e.g. "2301.07041" — taken from arxiv_papers in /chat response
+
+@app.post("/papers/ingest-arxiv")
+async def ingest_arxiv(req: ArxivIngestRequest):
+    """
+    User-confirmed ingest of an ArXiv paper into the knowledge base.
+ 
+    Flow:
+      1. User calls /chat → gets arxiv_papers list
+      2. User picks a paper they want → copies its arxiv_id
+      3. User calls this endpoint → paper downloaded + ingested
+      4. Future /chat queries now find this paper in local Qdrant
+    """
+    try:
+        result = ingest_arxiv_paper(
+            arxiv_id=req.arxiv_id,
+            login_id=req.login_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+ 
+    return {
+        "message": (
+            f"'{result['title']}' added to your library. "
+            "You can now ask questions about it in /chat."
+        ),
+        **result,
+    }
